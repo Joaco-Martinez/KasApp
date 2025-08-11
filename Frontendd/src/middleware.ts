@@ -1,136 +1,122 @@
-import { NextResponse } from "next/server"
-import type { NextRequest } from "next/server"
-import { jwtDecode } from "jwt-decode"
-import { userPayload } from "@/interfaces/userPayload.dto"
-import { projectTraceSource } from "next/dist/build/swc/generated-native"
+import { NextResponse } from "next/server";
+import type { NextRequest } from "next/server";
+import { jwtDecode } from "jwt-decode";
+import type { userPayload } from "@/interfaces/userPayload.dto";
 
-// 1. Definir rutas protegidas y públicas
-const protectedRoutes = ["/DashboardAgente"]
-const onBoardingRoutes = ["/stripe"]
-const adminRoutes = ["/DashboardAdmin"]
-const publicRoutes = ["/login", "/register"]
+// Rutas
+const protectedRoutes = ["/DashboardAgente"];
+const onBoardingRoutes = ["/stripe"];
+const adminRoutes = ["/DashboardAdmin"];
+const publicRoutes = ["/login", "/register"];
 
 export default async function middleware(request: NextRequest) {
-  let isTokenValid = false
-    const sessionToken = request.cookies.get("token")?.value
-  try {
-     isTokenValid = await verifyToken(request)
-  } catch (error) {
-    console.log("Error al verificar el token:", error)
-    isTokenValid = false
+  const path = request.nextUrl.pathname;
+
+  const isProtectedRoute = protectedRoutes.includes(path);
+  const isOnBoardingRoute = onBoardingRoutes.includes(path);
+  const isAdminRoute = adminRoutes.includes(path);
+  const isPublicRoute = publicRoutes.includes(path);
+
+  const token = request.cookies.get("token")?.value;
+
+  // Decodifico lo mínimo posible del token para no depender solo del endpoint
+  const { isAuthenticated, isAdmin, isOnBoarding, isPay } = verifySession(token);
+
+  // Verificación con backend (evita loop y limpia cookie si es inválido)
+  const isTokenValid = await verifyToken(request);
+
+  // Si hay token pero es inválido -> borro cookie y mando a /login
+  if (token && !isTokenValid && !isPublicRoute) {
+    const res = NextResponse.redirect(new URL("/login", request.nextUrl));
+    res.cookies.delete("token");
+    return res;
   }
 
-
-
-  console.log("🚀 Middleware ejecutándose en:", request.nextUrl.pathname)
-  const path = request.nextUrl.pathname
-  const isProtectedRoute = protectedRoutes.includes(path)
-  const isOnBoardingRoute = onBoardingRoutes.includes(path)
-  const isAdminRoute = adminRoutes.includes(path)
-  const isPublicRoute = publicRoutes.includes(path)
-
-  if (!isTokenValid && !isPublicRoute && sessionToken) {
-    const response =  NextResponse.redirect(new URL("/login", request.nextUrl))
-    response.cookies.delete("token")
-    return response
-  }
-  // 2. Obtener la cookie del request
-  const session = verifySession(sessionToken)
-  const { isAuthenticated, isAdmin, isOnBoarding, isPay } = session
-
-  if (isAuthenticated && isAdmin) {
-      return NextResponse.next()
+  // Si la ruta es pública y el usuario ya está auth -> redirijo a destino
+  if (isPublicRoute && isAuthenticated && isTokenValid) {
+    const targetPath = isOnBoarding ? "/stripe" : "/DashboardAgente";
+    return NextResponse.redirect(new URL(targetPath, request.nextUrl));
   }
 
-  // // 3. Redirección si no está autenticado
+  // Rutas protegidas: si no está auth -> login
   if (isProtectedRoute && !isAuthenticated) {
-    return NextResponse.redirect(new URL("/login", request.nextUrl))
+    return NextResponse.redirect(new URL("/login", request.nextUrl));
   }
 
-
+  // Onboarding: si está en proceso y entra a protegida -> mandarlo a /stripe
   if (isProtectedRoute && isOnBoarding && isAuthenticated) {
-    return NextResponse.redirect(new URL("/stripe", request.nextUrl))
+    return NextResponse.redirect(new URL("/stripe", request.nextUrl));
   }
+
+  // Si intenta entrar a /stripe sin estar en onboarding -> home
   if (isOnBoardingRoute && !isOnBoarding) {
-    console.log(isOnBoarding)
-    return NextResponse.redirect(new URL("/", request.nextUrl))
+    return NextResponse.redirect(new URL("/", request.nextUrl));
   }
 
-  if (isAdminRoute && !isAdmin) {
-    return NextResponse.redirect(new URL("/", request.nextUrl))
-  }
+  // Admin: requiere auth + admin
   if (isAdminRoute && !isAuthenticated) {
-    return NextResponse.redirect(new URL("/login", request.nextUrl))
+    return NextResponse.redirect(new URL("/login", request.nextUrl));
+  }
+  if (isAdminRoute && !isAdmin) {
+    return NextResponse.redirect(new URL("/", request.nextUrl));
   }
 
-  if (isPublicRoute && isAuthenticated) {
-    const targetPath = isOnBoarding  ? "/stripe" : "/DashboardAgente"
-    return NextResponse.redirect(new URL(targetPath, request.nextUrl))
-  }
+  return NextResponse.next();
+}
 
-  return NextResponse.next()
-}
-async function verifyToken(req: NextRequest) {
-  
-  const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:3000"
-  console.log(API_URL)
-  const res = await fetch(`${API_URL}/auth/validToken`, {
-    headers: {
-      Cookie: `token=${req.cookies.get('token')?.value}`,
-    },
-    cache: 'no-store',
-  });
-  console.log("ESTO ME DIO", res.status)
-  
-  return res.status === 401 || res.status === 403 || res.status === 404 ? false : true
-}
-function verifySession(token: string | undefined): {
-  isAuthenticated: boolean
-  isAdmin: boolean
-  isOnBoarding: boolean 
-  isPay: string | undefined | boolean} {
-  console.log(token)
-  if (!token) return {
-    isAuthenticated: false,
-    isAdmin: false,
-    isOnBoarding: false,
-    isPay: false
-  }
+// === Helpers ===
+
+async function verifyToken(req: NextRequest): Promise<boolean> {
+  // IMPORTANTe: usar /api/... para quedar fuera del matcher y evitar loop.
+  // Si NEXT_PUBLIC_API_URL apunta a backend externo, úsalo; si no, usa mismo origen.
+  const external = process.env.NEXT_PUBLIC_API_URL?.replace(/\/$/, "");
+  const url = external
+    ? `${external}/auth/validToken`
+    : `${req.nextUrl.origin}/api/auth/validToken`;
+
   try {
-    const user:userPayload = jwtDecode(token)
-    console.log('user::: ', user);
-    const isAdmin = user.isAdmin
-    console.log('isAdmin::: ', isAdmin);
-    const isPay = user.status
-    console.log('isPay::: ', isPay);
-    const isOnBoarding = user.onBoarding ? true : false
-    console.log('isOnBoarding::: ', isOnBoarding);
-    const isAuthenticated = true
-    console.log('isAuthenticated::: ', isAuthenticated);
+    const res = await fetch(url, {
+      headers: {
+        // Reenvío cookie al backend
+        cookie: req.headers.get("cookie") ?? "",
+      },
+      // Evita caché en edge
+      cache: "no-store",
+    });
 
-    
-
-    return {
-      isAuthenticated,
-      isAdmin,
-      isOnBoarding,
-      isPay
-    }
-  } catch {
-    return {
-      isAuthenticated: false,
-      isAdmin: false,
-      isOnBoarding: false,
-      isPay: false
-    }
+    // 2xx/3xx = válido; 401/403/404 = inválido
+    return !(res.status === 401 || res.status === 403 || res.status === 404);
+  } catch (e) {
+    // Si falla la red, tratamos como inválido para no romper navegación
+    return false;
   }
 }
 
+function verifySession(token?: string): {
+  isAuthenticated: boolean;
+  isAdmin: boolean;
+  isOnBoarding: boolean;
+  isPay: boolean | string | undefined;
+} {
+  if (!token)
+    return { isAuthenticated: false, isAdmin: false, isOnBoarding: false, isPay: false };
 
+  try {
+    const user = jwtDecode<userPayload>(token);
+    return {
+      isAuthenticated: true,
+      isAdmin: !!user.isAdmin,
+      isOnBoarding: !!user.onBoarding,
+      isPay: user.status,
+    };
+  } catch {
+    return { isAuthenticated: false, isAdmin: false, isOnBoarding: false, isPay: false };
+  }
+}
+
+// Excluir /api y estáticos (así /api/auth/validToken nunca pasa por el middleware)
 export const config = {
   matcher: [
-    '/((?!api|_next|.*\\.(?:png|jpg|jpeg|svg|ico|webp|gif|css|js|map)$).*)',
+    "/((?!api|_next|.*\\.(?:png|jpg|jpeg|svg|ico|webp|gif|css|js|map)$).*)",
   ],
-}
-
-
+};

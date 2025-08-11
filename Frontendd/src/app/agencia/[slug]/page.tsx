@@ -1,24 +1,28 @@
 "use client";
 
-import {useAgency} from "../../../../context/agencyContext";
+import { useAgency } from "../../../../context/agencyContext";
 import BannerAgencia from "@/components/AgenciaComponents/BannerAgencia";
-
 import Loader from "@/components/Loader/Loader";
-import { notFound } from "next/navigation";
-
-
 
 export default function AgenciaLanding() {
   const { agencia, loading } = useAgency();
-   if (loading) return (
-    <div className="flex items-center justify-center h-screen">
-      <Loader />
-    </div>
-   );
-  if (!agencia) return notFound();
+
+  if (loading)
+    return (
+      <div className="flex items-center justify-center h-screen">
+        <Loader />
+      </div>
+    );
+
+  if (!agencia)
+    return (
+      <div className="flex items-center justify-center h-screen text-center">
+        <p className="text-xl text-gray-600">No se encontró la agencia.</p>
+      </div>
+    );
+
   return (
     <div className="min-h-screen flex flex-col">
-      
       <BannerAgencia
         bannerImageUrl={agencia.customization.banner}
         logoImage={agencia.customization.logoImage}
@@ -49,7 +53,6 @@ export default function AgenciaLanding() {
           <p className="text-base sm:text-lg">{agencia.description}</p>
         </div>
       </main>
-
     </div>
   );
 }
